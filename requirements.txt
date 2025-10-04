@@ -1,5 +1,2 @@
-fastapi
-uvicorn
-numpy
 openai
-python-multipart
+numpy
