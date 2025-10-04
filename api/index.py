@@ -1,53 +1,53 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
+import os
+import json
 import numpy as np
 from openai import OpenAI
 
-app = FastAPI()
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["OPTIONS", "POST"],
-    allow_headers=["*"],
-)
+def handler(request):
+    try:
+        # Parse request body
+        body = request.get_json()
+        docs = body.get("docs", [])
+        query = body.get("query", "")
 
-# Initialize OpenAI client
-client = OpenAI()
+        if not docs or not query:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Missing docs or query"})
+            }
 
-class SimilarityRequest(BaseModel):
-    docs: List[str]
-    query: str
+        # Get query embedding
+        query_emb = client.embeddings.create(
+            input=[query],
+            model="text-embedding-3-small"
+        ).data[0].embedding
 
-def get_embedding(text: str) -> List[float]:
-    response = client.embeddings.create(
-        input=text,
-        model="text-embedding-3-small"
-    )
-    return response.data[0].embedding
+        # Get document embeddings
+        doc_embs = [
+            client.embeddings.create(input=[d], model="text-embedding-3-small").data[0].embedding
+            for d in docs
+        ]
 
-def cosine_similarity(a: List[float], b: List[float]) -> float:
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        # Compute cosine similarity
+        sims = [
+            float(np.dot(query_emb, d) / (np.linalg.norm(query_emb) * np.linalg.norm(d)))
+            for d in doc_embs
+        ]
 
-@app.post("/similarity")
-async def compute_similarity(request: SimilarityRequest):
-    # Get embeddings for all documents and query
-    doc_embeddings = [get_embedding(doc) for doc in request.docs]
-    query_embedding = get_embedding(request.query)
-    
-    # Calculate similarities
-    similarities = [
-        cosine_similarity(query_embedding, doc_embedding)
-        for doc_embedding in doc_embeddings
-    ]
-    
-    # Get indices of top 3 most similar documents
-    top_indices = np.argsort(similarities)[-3:][::-1]
-    
-    # Return the document contents in order of similarity
-    matches = [request.docs[i] for i in top_indices]
-    
-    return {"matches": matches}
+        best_idx = int(np.argmax(sims))
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "best_match": docs[best_idx],
+                "similarities": sims
+            })
+        }
+
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
